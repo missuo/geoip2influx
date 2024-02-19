@@ -1,5 +1,5 @@
 FROM lsiobase/alpine:3.15
-LABEL maintainer="GilbN"
+LABEL maintainer="missuo"
 
 WORKDIR /geoip2influx
 COPY requirements.txt geoip2influx.py /geoip2influx/
