@@ -18,7 +18,8 @@ from IPy import IP as ipadd
 
 
 # Getting params from envs
-geoip_db_path = '/config/geoip2db/GeoLite2-City.mmdb'
+geoip_city_db_path = '/config/geoip2db/GeoLite2-City.mmdb'
+geoip_asn_db_path = '/config/geoip2db/GeoLite2-ASN.mmdb'
 log_path = env.get('NGINX_LOG_PATH', '/config/log/nginx/access.log')
 influxdb_host = env.get('INFLUX_HOST', 'localhost')
 influxdb_port = env.get('INFLUX_HOST_PORT', '8086')
@@ -106,7 +107,7 @@ def file_exists(log_path,geoip_db_path):
 
 def logparse(
         log_path, influxdb_host, influxdb_port, influxdb_database, influxdb_user, influxdb_user_pass, influxdb_retention,
-        influxdb_shard, geo_measurement, log_measurement, send_nginx_logs, geoip_db_path, inode):
+        influxdb_shard, geo_measurement, log_measurement, send_nginx_logs, geoip_city_db_path, geoip_asn_db_path, inode):
     # Preparing variables and params
     ips = {}
     geohash_fields = {}
@@ -151,7 +152,8 @@ def logparse(
     re_ipv4 = compile(r'(?P<ipaddress>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}) - (?P<remote_user>.+) \[(?P<dateandtime>\d{2}\/[A-Z]{1}[a-z]{2}\/\d{4}:\d{2}:\d{2}:\d{2} ((\+|\-)\d{4}))\](["](?P<method>.+)) (?P<referrer>.+) ((?P<http_version>HTTP\/[1-3]\.[0-9])["]) (?P<status_code>\d{3}) (?P<bytes_sent>\d{1,99})(["](?P<url>(\-)|(.+))["]) (?P<host>.+) (["](?P<user_agent>.+)["])(["](?P<request_time>.+)["]) (["](?P<connect_time>.+)["])(["](?P<city>.+)["]) (["](?P<country_code>.+)["]) (?P<asn>\d+) (["](?P<asn_org>.+?)["])', IGNORECASE) # NOQA
     re_ipv6 = compile(r'(?P<ipaddress>(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))) - (?P<remote_user>.+) \[(?P<dateandtime>\d{2}\/[A-Z]{1}[a-z]{2}\/\d{4}:\d{2}:\d{2}:\d{2} ((\+|\-)\d{4}))\](["](?P<method>.+)) (?P<referrer>.+) ((?P<http_version>HTTP\/[1-3]\.[0-9])["]) (?P<status_code>\d{3}) (?P<bytes_sent>\d{1,99})(["](?P<url>(\-)|(.+))["]) (?P<host>.+) (["](?P<user_agent>.+)["])(["](?P<request_time>.+)["]) (["](?P<connect_time>.+)["])(["](?P<city>.+)["]) (["](?P<country_code>.+)["])(?P<asn>\d+) (["](?P<asn_org>.+?)["])', IGNORECASE) # NOQA
 
-    gi = Reader(geoip_db_path)
+    gi_city = Reader(geoip_city_db_path)
+    gi_asn = Reader(geoip_asn_db_path)
 
     if send_nginx_logs in ('true', 'True'):
         send_logs = True
@@ -202,7 +204,8 @@ def logparse(
                     continue
                 ip_type = ipadd(ip).iptype()
                 if ip_type in monitored_ip_types and ip:
-                    info = gi.city(ip)
+                    info = gi_city.city(ip)
+                    asn_info = gi_asn.asn(ip)
                     if info:
                         geohash = encode(info.location.latitude, info.location.longitude)
                         geohash_fields['count'] = 1
@@ -217,6 +220,8 @@ def logparse(
                         geohash_tags['postal_code'] = info.postal.code if info.postal.code else "-"
                         geohash_tags['latitude'] = info.location.latitude if info.location.latitude else "-"
                         geohash_tags['longitude'] = info.location.longitude if info.location.longitude else "-"
+                        geohash_tags['asn'] = asn_info.autonomous_system_number
+                        geohash_tags['asn_org'] = asn_info.autonomous_system_organization
                         ips['tags'] = geohash_tags
                         ips['fields'] = geohash_fields
                         ips['measurement'] = geo_measurement
@@ -233,7 +238,8 @@ def logparse(
                 if send_logs:
                     data = search(log, line)
                     if ip_type in monitored_ip_types and ip:
-                        info = gi.city(ip)
+                        info = gi_city.city(ip)
+                        info_asn = gi_asn.asn(ip)
                         if info:
                             datadict = data.groupdict()
                             log_data_fields['count'] = 1
@@ -259,8 +265,8 @@ def logparse(
                             log_data_tags['city'] = datadict['city']
                             log_data_tags['country_code'] = datadict['country_code']
                             log_data_tags['country_name'] = info.country.name
-                            log_data_tags['asn'] = datadict['asn']
-                            log_data_tags['asn_org'] = datadict['asn_org']
+                            log_data_tags['asn'] = info_asn.autonomous_system_number
+                            log_data_tags['asn_org'] = info_asn.autonomous_system_organization
                             nginx_log['tags'] = log_data_tags
                             nginx_log['fields'] = log_data_fields
                             nginx_log['measurement'] = log_measurement
@@ -278,7 +284,8 @@ def main():
     logging.info('Starting geoip2influx..')
 
     logging.debug('Variables set:' +
-    f'\n geoip_db_path             :: {geoip_db_path}' +
+    f'\n geoip_city_db_path             :: {geoip_city_db_path}' +
+    f'\n geoip_asn_db_path             :: {geoip_asn_db_path}' +
     f'\n -e LOG_PATH               :: {log_path}' +
     f'\n -e INFLUX_HOST            :: {influxdb_host}' +
     f'\n -e INFLUX_HOST_PORT       :: {influxdb_port}' +
@@ -293,13 +300,13 @@ def main():
     f'\n -e GEOIP2INFLUX_LOG_LEVEL :: {log_level}' 
     )
     # Parsing log file and sending metrics to Influxdb
-    while file_exists(log_path,geoip_db_path):
+    while file_exists(log_path, geoip_city_db_path):
         # Get inode from log file
         inode = stat(log_path).st_ino
         # Run main loop and grep a log file
         logparse(
             log_path, influxdb_host, influxdb_port, influxdb_database, influxdb_user, influxdb_user_pass,
-            influxdb_retention, influxdb_shard, geo_measurement, log_measurement, send_nginx_logs, geoip_db_path, inode) # NOQA
+            influxdb_retention, influxdb_shard, geo_measurement, log_measurement, send_nginx_logs, geoip_city_db_path, geoip_asn_db_path, inode) # NOQA
 
 if __name__ == '__main__':
     try:
